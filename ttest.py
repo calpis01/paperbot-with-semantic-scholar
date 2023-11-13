@@ -14,7 +14,7 @@ from datetime import datetime
 
 config = configparser.ConfigParser()
 config.read('.config')
-
+last_checked_file = 'last_checked.txt'
 webhook_url = config.get('discord_webhook', 'url')
 openai.api_key = os.getenv("OPENAI_API_KEY")
 ss_url = 'http://api.semanticscholar.org/graph/v1/paper/search?'
@@ -24,9 +24,10 @@ fields = (
     'citationCount', 'publicationDate', 'isOpenAccess', 'openAccessPdf', 'fieldsOfStudy', 'publicationVenue', 'tldr', 's2FieldsOfStudy'
 )
 
+#query_list = input("query:")
 query_list = ('indoor scene')
 
-limit = 100 #queryで検索をかけた際に返ってくる論文の数（期間はランダムだと思われ）
+limit = 50 #queryで検索をかけた際に返ってくる論文の数（期間はランダムだと思われ）
 # year range will be randomly chosen from here
 # range_classic = np.arange(1990, 2025, 10)
 
@@ -78,6 +79,30 @@ def get_sorted_papers_data(url_, sort_key_):
     sorted_data_ = sorted(filtered_data, key=lambda x: x[sort_key_], reverse=True)
     return sorted_data_
 
+def get_last_checked_date():
+    try:
+        with open('last_checked.txt', 'r') as file:
+            last_checked_date = file.read().strip()
+            # 空の場合はデフォルトの日付を返す
+            if not last_checked_date:
+                return datetime.now()
+            return datetime.strptime(last_checked_date, '%Y-%m-%d')
+    except FileNotFoundError:
+        # ファイルが存在しない場合もデフォルトの日付を返す
+        return datetime.now()
+    
+def update_last_checked_date():
+    with open(last_checked_file, 'w') as file:
+        file.write(datetime.now().strftime('%Y-%m-%d'))
+
+def post_obsidian(message:str, file_path:str, file_name:str):
+    dout = pathlib.Path(file_path)
+    filename = '{}.md'.format(file_name)
+    mdfile_path = os.path.join(dout, filename)
+
+    with open(mdfile_path, 'at') as f:
+        f.write(message)
+
 def post_discord(message: str, webhook_url: str):
     headers = {
         "Content-Type": "application/json",
@@ -94,16 +119,41 @@ def post_discord(message: str, webhook_url: str):
         assert res.getcode() == 204
 
 if __name__ == "__main__":
-    sema_url = generate_url(ss_url, query_list, fields, limit, 0)
-    sorted_data = get_sorted_papers_data(sema_url, 'publicationDate')
-    for d in sorted_data[0:10]:
-        #fields_of_study_str = ', '.join(d['fieldsOfStudy']) if d['fieldsOfStudy'] else 'N/A'
+    parser = argparse.ArgumentParser(description='--paper_id is arxiv paper id')
 
-        contents = f"タイトル: {d['title']}\n引用数: {d['citationCount']}\n発行日: {d['publicationDate']}\n カテゴリ1 {d['fieldsOfStudy']}\n venue: {d['publicationVenue']['name'], d['publicationVenue']['']}\nss_url: {d['url']}\n"
-        print(contents)
-        if d['isOpenAccess'] == True:
+    parser.add_argument("-i", "--paper_id", type=str, default="None", help="arxiv paper id")
+    parser.add_argument('--obsidian', default='/mnt/c/Users/takuo/OneDrive/ドキュメント/Obsidian Vault/index/paperbank/', help='where is your Obsidian root.')
+    args = parser.parse_args()
+    sema_url = generate_url(ss_url, query_list, fields, limit, 0)
+    sorted_data = get_sorted_papers_data(sema_url, 'influentialCitationCount')
+    for d in sorted_data[0:20]:
+        contents = f"タイトル: {d['title']}\n引用数: {d['citationCount']}\n発行日: {d['publicationDate']}\n"
+
+        # fieldsOfStudy のチェック
+        if d.get('fieldsOfStudy'):
+            fields_of_study_str = ', '.join(d['fieldsOfStudy'])
+            contents += f"カテゴリ1: {fields_of_study_str}\n"
+
+        # publicationVenue のチェックと処理
+        venue = d.get('publicationVenue')
+        if isinstance(venue, dict):
+            alternate_names = venue.get('alternate_names')
+            if alternate_names:
+                alternate_names_str = ', '.join(alternate_names)
+                contents += f"会議名: {alternate_names_str}\n"
+            else:
+                contents += "会議名: 情報なし\n"
+        else:
+            contents += "会議名: データなし\n"
+
+        contents += f"ss_url: {d['url']}\n"
+
+        # openAccessPdf のチェック
+        if d.get('openAccessPdf') and d['openAccessPdf'].get('url'):
             contents += f"open_accesss_url: {d['openAccessPdf']['url']}\n"
-            print(contents)
+
+        print(contents)
+        #post_obsidian(contents+'\n'*3, args.obsidian, "indoor scene")
         #post_discord(contents, webhook_url)
         #print(d)
         #print(summarize_paper(d))
